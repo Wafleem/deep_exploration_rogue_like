@@ -1,59 +1,133 @@
 import React, { useState } from 'react';
-import { Droplet, Heart, ChevronRight, XCircle, RefreshCcw } from 'lucide-react';
+import { ChevronRight, XCircle, RefreshCcw, Sword } from 'lucide-react'; 
 
-// Game Constants
+//game Constants
 const SECTOR_COST = 5;
 const INITIAL_RESOURCES = { oxygen: 80, shield: 50 };
 const INITIAL_LOG = [{ message: "DEEP SEA EXPLORER SYSTEMS ONLINE! READY TO LAUNCH.", type: 'START' }];
 
 const ENEMY_DRONE = { 
+  id: 'drone',
   name: 'Automated Drone', 
   damage: 10, 
   o2_loss: 3, 
+  escape_difficulty: 30, //base chance to flee successfully
   description: 'An old, automated drone patrol. Must be disabled.' 
 };
+
+const ENEMY_LEVIATHAN = 
+{
+  id: 'leviathan',
+  name: 'Leviathan',
+  damage: 25,
+  o2_loss: 10,
+  escape_difficulty: 65, //higher difficulty to flee
+  description: 'A massive predator thought only to exist in ancient myths. You must make it a myth.'
+};
+
+const ENEMY_TYPES = [ENEMY_DRONE, ENEMY_LEVIATHAN];
 
 function App() {
   const [resources, setResources] = useState(INITIAL_RESOURCES); 
   const [sector, setSector] = useState(1);
   const [log, setLog] = useState(INITIAL_LOG);
+  //state to hold the active enemy object when an encounter occurs
+  const [currentEncounter, setCurrentEncounter] = useState(null); 
 
   const resetGame = () => {
     setResources(INITIAL_RESOURCES);
     setSector(1);
     setLog(INITIAL_LOG);
+    setCurrentEncounter(null);
   };
 
-  const handleEncounter = () => {
-    const enemy = ENEMY_DRONE;
-    let combatLog = [];
-    let damageTaken = enemy.damage;
-    let oxygenLost = enemy.o2_loss;
 
-    const shieldRemaining = resources.shield - damageTaken;
-    if (shieldRemaining >= 0) {
-      setResources(prev => ({ ...prev, shield: shieldRemaining }));
-      combatLog.push({ message: `ENCOUNTER: Detected hostile ${enemy.name}! The drone's attack was absorbed by your Shield. (-${damageTaken} Shield)`, type: 'COMBAT' });
-      damageTaken = 0;
-    } else {
-      damageTaken = -shieldRemaining;
-      setResources(prev => ({ ...prev, shield: 0 }));
-      combatLog.push({ message: `ENCOUNTER: Hostile ${enemy.name} detected! Shield breached! (-${resources.shield} Shield)`, type: 'COMBAT' });
-    }
-
-    const newOxygen = resources.oxygen - damageTaken - oxygenLost;
-
-    setResources(prev => ({
-        ...prev,
-        oxygen: newOxygen,
-    }));
-
-    if (damageTaken > 0) {
-        combatLog.push({ message: `CRITICAL HIT! Hull damage taken. (-${damageTaken} Oxygen)`, type: 'COMBAT' });
-    }
-    combatLog.push({ message: `Drone disabled. Combat concluded. Additional O2 consumption during fight. (-${oxygenLost} Oxygen)`, type: 'COMBAT' });
+  // the probability of winning a fight (based on relative Shield/Damage)
+  const getFightChance = (enemy) => {
+    // Player's effective health compared to enemy damage (approximate)
+    const playerHealth = resources.shield + (resources.oxygen * 0.5);
+    const fightFactor = playerHealth / enemy.damage;
     
-    return combatLog;
+    //scale factor to a percentage 
+    let chance = Math.min(95, Math.max(10, Math.floor(fightFactor * 10) + 30));
+    return chance;
+  };
+  
+  //probability of successful escape (based on enemy's difficulty and player's O2/Shield)
+  const getFleeChance = (enemy) => {
+      //difficulty modified by player's remaining resources (max 95%, min 5%)
+      const resourceFactor = (resources.oxygen + resources.shield) / (INITIAL_RESOURCES.oxygen + INITIAL_RESOURCES.shield); // 0 to 1
+      let chance = 100 - enemy.escape_difficulty;
+      chance = chance + Math.floor(resourceFactor * 20); // Bonus for high resources
+      
+      return Math.min(95, Math.max(5, chance));
+  }
+
+  const handleFight = (enemy) => {
+    setCurrentEncounter(null); //encounter is resolved
+    let combatLog = [];
+    const winChance = getFightChance(enemy);
+    const roll = Math.random() * 100;
+
+    if (roll <= winChance) {
+        //player wins the fight
+        combatLog.push({ message: `VICTORY! The ${enemy.name} was disabled`, type: 'COMBAT_WIN' });
+        //O2 cost for combat effort
+        setResources(prev => ({ ...prev, oxygen: Math.max(0, prev.oxygen - enemy.o2_loss / 2) }));
+
+    } else {
+        //player loses the fight
+        combatLog.push({ message: `DEFEAT! The ${enemy.name} overpowered the submersible. Major damage taken.`, type: 'COMBAT_LOSS' });
+        
+        let damageTaken = enemy.damage;
+        let oxygenLost = enemy.o2_loss;
+
+        const shieldRemaining = resources.shield - damageTaken;
+        if (shieldRemaining >= 0) {
+          setResources(prev => ({ ...prev, shield: shieldRemaining, oxygen: Math.max(0, prev.oxygen - oxygenLost) }));
+          combatLog.push({ message: `Shield absorbed the blow. (-${damageTaken} Shield)`, type: 'COMBAT_LOSS' });
+        } else {
+          damageTaken = -shieldRemaining;
+          const newOxygen = resources.oxygen - damageTaken - oxygenLost;
+          
+          setResources(prev => ({ ...prev, shield: 0, oxygen: Math.max(0, newOxygen) }));
+          combatLog.push({ message: `Shield breached! Hull damage taken. (-${damageTaken} Oxygen, -${oxygenLost} O2 for struggle)`, type: 'COMBAT_LOSS' });
+        }
+    }
+    
+    setLog(prevLog => [...combatLog, ...prevLog].slice(0, 50));
+  };
+  
+  const handleFlee = (enemy) => {
+    setCurrentEncounter(null); //resolve encounter
+    let fleeLog = [];
+    const fleeChance = getFleeChance(enemy);
+    const roll = Math.random() * 100;
+
+    //costs O2 due to rapid acceleration
+    const fleeO2Cost = 5; 
+    setResources(prev => ({ ...prev, oxygen: Math.max(0, prev.oxygen - fleeO2Cost) }));
+
+    if (roll <= fleeChance) {
+        //Successful 
+        fleeLog.push({ message: `SUCCESS! Managed to evade the ${enemy.name} and escaped the sector. (-${fleeO2Cost} Oxygen)`, type: 'FLEE_SUCCESS' });
+    } else {
+        //Failed
+        const fleeDamage = Math.floor(enemy.damage / 2);
+        const shieldRemaining = resources.shield - fleeDamage;
+        
+        if (shieldRemaining >= 0) {
+          setResources(prev => ({ ...prev, shield: shieldRemaining }));
+          fleeLog.push({ message: `FAILED! The ${enemy.name} caught a glancing blow during escape. (-${fleeDamage} Shield, -${fleeO2Cost} Oxygen)`, type: 'FLEE_FAILURE' });
+        } else {
+          const hullDamage = -shieldRemaining;
+          const newOxygen = resources.oxygen - hullDamage;
+          setResources(prev => ({ ...prev, shield: 0, oxygen: Math.max(0, newOxygen) }));
+          fleeLog.push({ message: `FAILED! Hull scraped during retreat. (-${hullDamage} Oxygen, -${fleeO2Cost} Oxygen)`, type: 'FLEE_FAILURE' });
+        }
+    }
+    
+    setLog(prevLog => [...fleeLog, ...prevLog].slice(0, 50));
   };
 
   const handleO2Discovery = () => {
@@ -68,15 +142,14 @@ function App() {
   };
   
   const exploreSector = () => {
-    // Game Over Check 1: Already at 0 or less O2 
+    //02 already zero means game over
     if (resources.oxygen <= 0) {
-      setLog(prevLog => [{ message: "OXYGEN DEPLETED. SUBMERSIBLE POWERING DOWN. GAME OVER.", type: 'DEATH' }, ...prevLog]);
       return; 
     }
 
-    // NEW GAME OVER CHECK: Insufficient resources to advance (less than SECTOR_COST)
+    //insufficient resources to advance (less than SECTOR_COST)
     if (resources.oxygen < SECTOR_COST) {
-        // Force oxygen to 0 to trigger the UI's isGameOver message
+        
         setResources(prev => ({ ...prev, oxygen: 0 }));
         setLog(prevLog => [{ 
             message: `FAILURE: Insufficient Oxygen (${resources.oxygen}) remaining to power propulsion systems for Sector Advancement (${SECTOR_COST}). Stranded. GAME OVER.`, 
@@ -85,7 +158,7 @@ function App() {
         return;
     }
 
-    // Successful Exploration
+    //successful cost applied
     const newOxygen = resources.oxygen - SECTOR_COST;
     setResources(prevResources => ({
       ...prevResources, 
@@ -97,22 +170,73 @@ function App() {
 
     let newLog = [{ message: `[Sector ${nextSector}] Exploring... (-${SECTOR_COST} Oxygen)`, type: 'MOVE' }];
 
-    // Randomly trigger an event
+    //event trigger
     const eventRoll = Math.random();
-    let eventLogs = [];
-
-    if (eventRoll < 0.25) { // 25% chance of Encounter
-      eventLogs = handleEncounter();
-    } else if (eventRoll < 0.50) { // 25% chance of O2 Discovery
-      eventLogs = handleO2Discovery();
+    
+    if (eventRoll < 0.35) { //35% chance of Encounter
+      //80% Drone, 20% Leviathan
+      const enemyRoll = Math.random();
+      const enemy = enemyRoll < 0.8 ? ENEMY_DRONE : ENEMY_LEVIATHAN;
+      
+      setCurrentEncounter(enemy);
+      newLog.push({ message: `ALERT: Proximity warning! Detecting large hostile signature: ${enemy.name}!`, type: 'ENCOUNTER' });
+      
+    } else if (eventRoll < 0.50) { // 15% chance of O2 Discovery
+      let eventLogs = handleO2Discovery();
+      newLog.push(...eventLogs);
     } else { // 50% chance of Clear Passage
-      eventLogs = [{ message: "AREA CLEAR: Safe passage through the sector. No events detected.", type: 'EVENT' }];
+      newLog.push({ message: "AREA CLEAR: Safe passage through the sector. No events detected.", type: 'EVENT' });
     }
 
-    setLog(prevLog => [...eventLogs, ...newLog, ...prevLog].slice(0, 50));
+    setLog(prevLog => [...newLog, ...prevLog].slice(0, 50));
   };
 
   const isGameOver = resources.oxygen <= 0;
+  
+  // is the game paused waiting for player action
+  const isActionRequired = currentEncounter !== null;
+
+  // can the player move/is not dead
+  const canExplore = resources.oxygen >= SECTOR_COST && !isGameOver;
+
+
+  // rendering the Encounter/Action buttons
+  const renderActionButtons = () => {
+    if (!currentEncounter) return null;
+    
+    const fightChance = getFightChance(currentEncounter);
+    const fleeChance = getFleeChance(currentEncounter);
+    
+    return (
+        <div className="bg-slate-800 p-6 rounded-xl shadow-2xl mb-6 border border-red-700 animate-pulse">
+            <h3 className="text-xl font-bold text-red-400 mb-3 flex items-center">
+                ENCOUNTER: {currentEncounter.name}
+            </h3>
+            <p className="text-sm text-gray-300 mb-4">{currentEncounter.description}</p>
+            
+            <div className="grid grid-cols-2 gap-4">
+                {/* Fight Button */}
+                <button
+                    onClick={() => handleFight(currentEncounter)}
+                    className="w-full flex flex-col items-center justify-center px-4 py-3 rounded-xl text-lg font-bold transition-all duration-300 transform shadow-xl bg-red-700 hover:bg-red-600 active:scale-[0.98] text-white"
+                >
+                    <Sword className="w-6 h-6 mb-1" />
+                    FIGHT
+                    <span className="text-sm font-normal mt-1">Win Chance: {fightChance}%</span>
+                </button>
+                
+                {/* Flee Button */}
+                <button
+                    onClick={() => handleFlee(currentEncounter)}
+                    className="w-full flex flex-col items-center justify-center px-4 py-3 rounded-xl text-lg font-bold transition-all duration-300 transform shadow-xl bg-yellow-600 hover:bg-yellow-500 active:scale-[0.98] text-gray-900"
+                >
+                    FLEE
+                    <span className="text-sm font-normal mt-1">Escape Chance: {fleeChance}%</span>
+                </button>
+            </div>
+        </div>
+    );
+  };
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-slate-950 text-lime-300 p-4 font-mono">
@@ -131,7 +255,7 @@ function App() {
           <div className="grid grid-cols-2 gap-4">
             {/* Oxygen Card */}
             <div className="p-3 bg-slate-800 rounded-lg flex items-center shadow-inner">
-              <Droplet className="w-6 h-6 text-cyan-400 mr-3" />
+              <span className="text-cyan-400 text-3xl mr-3 font-bold">-</span>
               <div>
                 <p className="text-sm font-medium uppercase text-slate-400">Oxygen</p>
                 <p className={`text-xl font-bold ${resources.oxygen <= 10 ? 'text-red-500 animate-pulse' : 'text-white'}`}>{resources.oxygen}</p>
@@ -140,7 +264,7 @@ function App() {
 
             {/* Shield Card */}
             <div className="p-3 bg-slate-800 rounded-lg flex items-center shadow-inner">
-              <Heart className="w-6 h-6 text-red-500 mr-3" />
+              <span className="text-red-500 text-3xl mr-3 font-bold">--</span>
               <div>
                 <p className="text-sm font-medium uppercase text-slate-400">Shield</p>
                 <p className="text-xl font-bold text-white">{resources.shield}</p>
@@ -148,6 +272,9 @@ function App() {
             </div>
           </div>
         </div>
+        
+        {/* Render Action Buttons or Game Over/Explore */}
+        {renderActionButtons()}
         
         {/* Game Over Message */}
         {isGameOver && (
@@ -159,20 +286,22 @@ function App() {
         )}
         
         <div className="space-y-4">
-            {/* Explore Button */}
-            <button
-            onClick={exploreSector}
-            // Disable if game over OR if oxygen is less than the cost to move
-            disabled={isGameOver || resources.oxygen < SECTOR_COST} 
-            className={`w-full flex items-center justify-center px-6 py-3 rounded-xl text-lg font-bold transition-all duration-300 transform shadow-xl 
-            ${isGameOver || resources.oxygen < SECTOR_COST
-                ? 'bg-gray-700 text-gray-500 cursor-not-allowed' 
-                : 'bg-lime-600 hover:bg-lime-500 active:scale-[0.98] text-gray-900'
-            }`}
-            >
-            <ChevronRight className="w-5 h-5 mr-2" />
-            {isGameOver ? 'VESSEL DISABLED' : `Explore Next Sector (-${SECTOR_COST} Oxygen)`}
-            </button>
+            {/* Explore Button (Only visible if no active encounter and not game over) */}
+            {!isActionRequired && !isGameOver && (
+                <button
+                onClick={exploreSector}
+                // The button is disabled when resources.oxygen < SECTOR_COST
+                disabled={!canExplore} 
+                className={`w-full flex items-center justify-center px-6 py-3 rounded-xl text-lg font-bold transition-all duration-300 transform shadow-xl 
+                ${!canExplore
+                    ? 'bg-gray-700 text-gray-500 cursor-not-allowed' 
+                    : 'bg-lime-600 hover:bg-lime-500 active:scale-[0.98] text-gray-900'
+                }`}
+                >
+                <ChevronRight className="w-5 h-5 mr-2" />
+                Explore Next Sector (-{SECTOR_COST} Oxygen)
+                </button>
+            )}
             
             {/* Restart Button (only show if game over or already moved past sector 1) */}
             {(isGameOver || sector > 1) && (
@@ -197,9 +326,12 @@ function App() {
                 key={index} 
                 className={`log-message 
                   ${entry.type === 'DEATH' ? 'border-red-600 text-red-400' : 
-                    entry.type === 'COMBAT' ? 'border-red-400 text-red-300' :
+                    entry.type === 'COMBAT_LOSS' ? 'border-red-400 text-red-300' :
+                    entry.type === 'ENCOUNTER' ? 'border-yellow-400 text-yellow-300' :
+                    entry.type === 'FLEE_FAILURE' ? 'border-yellow-600 text-yellow-400' :
+                    entry.type === 'COMBAT_WIN' || entry.type === 'FLEE_SUCCESS' ? 'border-lime-500 text-lime-300' :
                     entry.type === 'RESOURCE' ? 'border-cyan-400 text-cyan-300' :
-                    'border-lime-500'
+                    'border-slate-500'
                   }`}
               >
                 {entry.message}
